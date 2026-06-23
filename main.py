@@ -4,22 +4,38 @@ from typing import List
 import numpy as np
 import onnxruntime as ort
 import joblib
+import json
+import os
 from datetime import datetime
+from fastapi.middleware.cors import CORSMiddleware
 
-# Inicializar FastAPI
-app = FastAPI(title="API Calidad del Aire - Quito (Optimizada)")
+app = FastAPI(title="API Calidad del Aire - Quito")
 
-# Cargar el modelo ONNX y el escalador
+# Habilitar CORS para que tu interfaz web pueda consultar la API desde cualquier lado
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Cargar el modelo, escalador e historial semilla
 try:
     session = ort.InferenceSession('modelo_aire.onnx')
     scaler = joblib.load('escalador_aire.pkl')
-    print("¡Modelo ONNX y escalador cargados correctamente!")
+    
+    # Cargar las 24 horas automáticas
+    with open('semilla_historial.json', 'r') as f:
+        HISTORIAL_SEMILLA = json.load(f)
+        
+    print("¡Todos los recursos cargados correctamente!")
 except Exception as e:
-    print(f"Error crítico al cargar los archivos: {e}")
+    print(f"Error crítico al cargar componentes: {e}")
 
-class InputData(BaseModel):
+# ¡AHORA EL ESQUEMA SOLO PIDE LA FECHA!
+class PredictRequest(BaseModel):
     fecha_objetivo: str
-    historial: List[List[float]] # Matriz obligatoria de 24 filas x 17 columnas
 
 def evaluar_pm25(valor):
     if valor <= 15.0: return "Bueno"
@@ -38,34 +54,29 @@ def obtener_direccion_viento(grados):
     return direcciones[indice]
 
 @app.post("/predict")
-def predecir_calidad(payload: InputData):
-    # 1. Convertir el historial a matriz NumPy y aplicar la misma escala de Colab
-    entrada_bloque = np.array(payload.historial)
-    entrada_escalada = scaler.transform(entrada_bloque)
-    entrada_listo = np.expand_dims(entrada_escalada, axis=0).astype(np.float32)
+def predecir_calidad(payload: PredictRequest):
+    # Usar el historial oculto que cargamos del archivo JSON
+    entrada_bloque = np.array(HISTORIAL_SEMILLA)
+    entrada_listo = np.expand_dims(entrada_bloque, axis=0).astype(np.float32)
     
-    # 2. Ejecutar la inferencia ultra rápida con ONNX Runtime
+    # Inferencia ONNX
     inputs = {session.get_inputs()[0].name: entrada_listo}
     prediccion_escalada = session.run(None, inputs)[0]
     
-    # 3. Deshacer la escala para recuperar las unidades de medida originales
     prediccion_real = scaler.inverse_transform(prediccion_escalada)[0]
     
-    # Desempaquetado siguiendo EL ORDEN EXACTO de las columnas
     no2, o3, so2, pm25, co, pm10, tmp, dir_viento, rs, pre, iuv, vel, hum, llu, hora, mes, dia_semana = prediccion_real
     
-    # 4. Procesamiento de alertas
     estado_pm25 = evaluar_pm25(pm25)
     estado_general = "MALA" if "Dañino" in estado_pm25 or pm25 > 35 else "BUENA / NORMAL"
     
     try:
-        mes_objetivo = datetime.strptime(payload.fecha_objetivo, "%Y/%m/%d").month
+        mes_objetivo = datetime.strptime(payload.fecha_objetivo, "%Y-%m-%d").month
     except:
         mes_objetivo = 12
         
     lluvia_txt = "Alta probabilidad (típico de la época)" if llu > 3.0 and mes_objetivo in [10,11,12,1,2,3,4,5] else "Baja probabilidad"
 
-    # 5. Retornar el JSON estructurado
     return {
         "fecha_objetivo": payload.fecha_objetivo,
         "contexto": "Proyección Estacional a Largo Plazo (Quito)",

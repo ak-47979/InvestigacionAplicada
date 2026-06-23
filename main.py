@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timedelta
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="API Calidad del Aire - Rango Completo (Quito)")
+app = FastAPI(title="API Calidad del Aire - Mes Completo")
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,7 +22,7 @@ try:
     scaler = joblib.load('escalador_aire.pkl')
     with open('semilla_historial.json', 'r') as f:
         HISTORIAL_SEMILLA = json.load(f)
-    print("¡Recursos cargados correctamente!")
+    print("¡Recursos cargados con éxito!")
 except Exception as e:
     print(f"Error crítico: {e}")
 
@@ -54,7 +54,7 @@ def predecir_rango_calidad(payload: RangePredictRequest):
         if start_dt > end_dt:
             start_dt, end_dt = end_dt, start_dt
     except Exception as e:
-        return {"error": f"Formatos de fecha inválidos: {e}"}
+        return {"error": f"Fechas inválidas: {e}"}
 
     # Inferencia base ONNX
     entrada_bloque = np.array(HISTORIAL_SEMILLA)
@@ -67,7 +67,7 @@ def predecir_rango_calidad(payload: RangePredictRequest):
 
     resultados_rango = []
     current_dt = start_dt
-    max_dias = 15  
+    max_dias = 32  # CORREGIDO: Permite hasta 31 días del mes completo
     dias_procesados = 0
 
     while current_dt <= end_dt and dias_procesados < max_dias:
@@ -87,7 +87,6 @@ def predecir_rango_calidad(payload: RangePredictRequest):
         no2 = max(6.0, no2_b + (factor * 6.0))
         so2 = max(1.5, so2_b + (factor * 1.5))
         co = max(0.1, co_b + (factor * 0.2))
-
         rs_calculada = max(10.0, rs_b + (factor * 180.0)) if es_verano else max(5.0, rs_b + (factor * 90.0))
         
         if rs_calculada < 50.0: iuv_dinamico = 0
@@ -103,22 +102,17 @@ def predecir_rango_calidad(payload: RangePredictRequest):
         estado_pm25 = evaluar_pm25(pm25)
         dir_viento = (dir_b + (dia * 15)) % 360
         
-        # Mapeo idéntico de llaves estructuradas
         resultados_rango.append({
             "fecha": current_dt.strftime("%d/%m/%Y"),
             "estado_general": "MALA" if "Dañino" in estado_pm25 or pm25 > 35 else "BUENA / NORMAL",
-            "pm25": f"{pm25:.1f} ug/m³",
-            "pm10": f"{pm10:.1f} ug/m³",
-            "no2": f"{no2:.1f} ppb",
-            "o3": f"{o3:.1f} ppb",
-            "so2": f"{so2:.1f} ppb",
-            "co": f"{co:.1f} ppm",
-            "temperatura_tmp": f"{tmp:.1f} °C",
-            "humedad_hum": f"{hum:.0f}%",
-            "viento": f"{abs(vel):.1f} km/h ({obtener_direccion_viento(dir_viento)})",
-            "precipitacion_llu": lluvia_txt,
-            "radiacion_solar_rs": f"{rs_calculada:.1f} W/m²",
-            "indice_uv_iuv": f"{iuv_dinamico}"
+            # Valores limpios (Float) para que JS calcule promedios fácilmente
+            "v_pm25": float(pm25), "v_pm10": float(pm10), "v_no2": float(no2),
+            "v_o3": float(o3), "v_so2": float(so2), "v_co": float(co),
+            "v_tmp": float(tmp), "v_hum": float(hum), "v_vel": float(vel),
+            "v_rs": float(rs_calculada), "v_iuv": int(iuv_dinamico),
+            "v_pre": float(pre_b),
+            "lluvia_txt": lluvia_txt,
+            "viento_txt": f"{abs(vel):.1f} km/h ({obtener_direccion_viento(dir_viento)})"
         })
         
         current_dt += timedelta(days=1)

@@ -2,27 +2,25 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
 import numpy as np
-import tensorflow as tf
+import onnxruntime as ort
 import joblib
 from datetime import datetime
 
 # Inicializar FastAPI
-app = FastAPI(title="API Calidad del Aire - Quito (Producción)")
+app = FastAPI(title="API Calidad del Aire - Quito (Optimizada)")
 
-# Cargar la red neuronal y el escalador exportados desde Colab
+# Cargar el modelo ONNX y el escalador
 try:
-    modelo = tf.keras.models.load_model('modelo_aire.h5')
+    session = ort.InferenceSession('modelo_aire.onnx')
     scaler = joblib.load('escalador_aire.pkl')
-    print("¡Modelo y escalador cargados correctamente!")
+    print("¡Modelo ONNX y escalador cargados correctamente!")
 except Exception as e:
     print(f"Error crítico al cargar los archivos: {e}")
 
-# Definir la estructura estricta del JSON que debe enviar el cliente (App/Web)
 class InputData(BaseModel):
-    fecha_objetivo: str            # Formato: "YYYY/MM/DD"
-    historial: List[List[float]]    # Matriz obligatoria de 24 filas x 17 columnas
+    fecha_objetivo: str
+    historial: List[List[float]] # Matriz obligatoria de 24 filas x 17 columnas
 
-# Lógica de categorización bajo estándares de la OMS
 def evaluar_pm25(valor):
     if valor <= 15.0: return "Bueno"
     elif valor <= 35.0: return "Normal"
@@ -39,43 +37,39 @@ def obtener_direccion_viento(grados):
     indice = int((grados / 22.5) + .5) % 16
     return direcciones[indice]
 
-# ENDPOINT PRINCIPAL: Procesa la petición POST de la aplicación móvil
 @app.post("/predict")
 def predecir_calidad(payload: InputData):
     # 1. Convertir el historial a matriz NumPy y aplicar la misma escala de Colab
     entrada_bloque = np.array(payload.historial)
     entrada_escalada = scaler.transform(entrada_bloque)
+    entrada_listo = np.expand_dims(entrada_escalada, axis=0).astype(np.float32)
     
-    # Reestructurar dimensiones para que la capa LSTM lo acepte: (1, 24, 17)
-    entrada_listo = np.expand_dims(entrada_escalada, axis=0)
+    # 2. Ejecutar la inferencia ultra rápida con ONNX Runtime
+    inputs = {session.get_inputs()[0].name: entrada_listo}
+    prediccion_escalada = session.run(None, inputs)[0]
     
-    # 2. Ejecutar la predicción matemática en la red neuronal
-    prediccion_escalada = modelo.predict(entrada_listo)
-    
-    # 3. Deshacer la escala (0-1) para recuperar las unidades de medida originales del Excel
+    # 3. Deshacer la escala para recuperar las unidades de medida originales
     prediccion_real = scaler.inverse_transform(prediccion_escalada)[0]
     
-    # Desempaquetado siguiendo EL ORDEN EXACTO de las columnas de tu dataset
+    # Desempaquetado siguiendo EL ORDEN EXACTO de las columnas
     no2, o3, so2, pm25, co, pm10, tmp, dir_viento, rs, pre, iuv, vel, hum, llu, hora, mes, dia_semana = prediccion_real
     
-    # 4. Procesamiento de alertas y lógicas del contexto de Quito
+    # 4. Procesamiento de alertas
     estado_pm25 = evaluar_pm25(pm25)
     estado_general = "MALA" if "Dañino" in estado_pm25 or pm25 > 35 else "BUENA / NORMAL"
     
-    # Extraer el mes de la fecha solicitada para evaluar estacionalidad de lluvias
     try:
         mes_objetivo = datetime.strptime(payload.fecha_objetivo, "%Y/%m/%d").month
     except:
-        mes_objetivo = 12  # Mes por defecto si el formato falla
+        mes_objetivo = 12
         
     lluvia_txt = "Alta probabilidad (típico de la época)" if llu > 3.0 and mes_objetivo in [10,11,12,1,2,3,4,5] else "Baja probabilidad"
 
-    # 5. Retornar el desglose estructurado exacto solicitado
+    # 5. Retornar el JSON estructurado
     return {
         "fecha_objetivo": payload.fecha_objetivo,
         "contexto": "Proyección Estacional a Largo Plazo (Quito)",
         "estado_general_aire": estado_general,
-        "detalles_estado": "Condicionado por proyecciones de Material Particulado",
         "contaminantes_proyectados": {
             "pm25": f"{pm25:.1f} ug/m3 (Nivel: {estado_pm25})",
             "pm10": f"{pm10:.1f} ug/m3 (Nivel: {evaluar_pm10(pm10)})",

@@ -51,7 +51,6 @@ def obtener_direccion_viento(grados):
 
 @app.post("/predict")
 def predecir_calidad(payload: PredictRequest):
-    # 1. Inferencia base con el modelo ONNX
     entrada_bloque = np.array(HISTORIAL_SEMILLA)
     entrada_listo = np.expand_dims(entrada_bloque, axis=0).astype(np.float32)
     
@@ -59,10 +58,9 @@ def predecir_calidad(payload: PredictRequest):
     prediccion_escalada = session.run(None, inputs)[0]
     prediccion_real = scaler.inverse_transform(prediccion_escalada)[0]
     
-    # Desempaquetado original
     no2, o3, so2, pm25, co, pm10, tmp, dir_viento, rs, pre, iuv, vel, hum, llu, hora, mes, dia_semana = prediccion_real
     
-    # 2. SISTEMA DE VARIACIÓN DINÁMICA SEGÚN LA FECHA
+    # VARIACIÓN DINÁMICA AVANZADA
     try:
         fecha_dt = datetime.strptime(payload.fecha_objetivo, "%Y-%m-%d")
         dia = fecha_dt.day
@@ -71,31 +69,48 @@ def predecir_calidad(payload: PredictRequest):
         dia = 15
         mes_obj = 6
 
-    # Crear un factor pseudo-aleatorio único basado matemáticamente en el día y mes elegidos
-    factor = (dia * 0.05) - 0.4  # Genera variaciones entre -40% y +40%
-    
-    # Aplicar estacionalidad típica de Quito (Julio/Agosto seco y ventoso, Abril/Noviembre lluvioso)
+    # Factor dinámico basado en el día seleccionado
+    factor = (dia * 0.05) - 0.4  # Fluctúa entre -0.4 y +0.4
     es_verano = mes_obj in [6, 7, 8, 9]
     
-    # Modificar variables climáticas y contaminantes de forma controlada
-    tmp = tmp + (factor * 3.5) if es_verano else tmp + (factor * 2.0) - 1.5
-    hum = hum - (factor * 15) if es_verano else hum + (factor * 12)
-    vel = vel + abs(factor * 5) if mes_obj == 8 else vel + (factor * 2) # Agosto de vientos en Quito
+    # Modificar clima base
+    tmp = tmp + (factor * 4.5) if es_verano else tmp + (factor * 3.0) - 1.0
+    hum = hum - (factor * 20) if es_verano else hum + (factor * 25)
+    hum = min(max(30.0, hum), 95.0) # Forzar límites lógicos de humedad
     
-    # El viento dispersa contaminantes, el calor de verano puede elevar el ozono (O3)
-    pm25 = max(4.0, pm25 + (factor * 6.0)) if not es_verano else max(3.5, pm25 - (factor * 4.0))
-    pm10 = max(10.0, pm10 + (factor * 12.0))
-    o3 = max(5.0, o3 + (factor * 8.0)) if es_verano else max(5.0, o3 + (factor * 3.0))
-    no2 = max(8.0, no2 + (factor * 5.0))
+    vel = vel + abs(factor * 6) if mes_obj == 8 else vel + (factor * 2)
     
-    # Límites lógicos para porcentajes y direcciones
-    hum = min(max(35.0, hum), 98.0)
-    dir_viento = (dir_viento + (dia * 10)) % 360
+    # Modificar contaminantes
+    pm25 = max(3.0, pm25 + (factor * 7.0)) if not es_verano else max(2.5, pm25 - (factor * 3.0))
+    pm10 = max(8.0, pm10 + (factor * 14.0))
+    o3 = max(4.0, o3 + (factor * 9.0)) if es_verano else max(4.0, o3 + (factor * 4.0))
+    no2 = max(6.0, no2 + (factor * 6.0))
     
-    # 3. Evaluaciones y Alertas post-variación
+    # Corregir Radiación Solar para que tenga picos dinámicos más altos en verano
+    rs_calculada = max(10.0, rs + (factor * 180.0)) if es_verano else max(5.0, rs + (factor * 90.0))
+    
+    # CORRECCIÓN ÍNDICE UV: Ahora se calcula dinámicamente según la radiación solar proyectada
+    if rs_calculada < 50.0:
+        iuv_dinamico = 0
+    elif rs_calculada < 150.0:
+        iuv_dinamico = int(2 + factor * 2)
+    elif rs_calculada < 300.0:
+        iuv_dinamico = int(5 + factor * 3)
+    else:
+        iuv_dinamico = int(11 + factor * 4)
+    iuv_dinamico = min(max(0, iuv_dinamico), 14) # Asegurar rango UV estándar (0-14)
+
+    # CORRECCIÓN DE LLUVIA: Lógica basada puramente en la humedad resultante de la predicción
+    if hum > 82.0:
+        lluvia_txt = "Alta probabilidad (Precipitación fuerte)"
+    elif hum > 68.0:
+        lluvia_txt = "Moderada probabilidad (Lloviznas dispersas)"
+    else:
+        lluvia_txt = "Baja probabilidad"
+        
+    dir_viento = (dir_viento + (dia * 15)) % 360
     estado_pm25 = evaluar_pm25(pm25)
     estado_general = "MALA" if "Dañino" in estado_pm25 or pm25 > 35 else "BUENA / NORMAL"
-    lluvia_txt = "Alta probabilidad (Época lluviosa)" if (llu > 2.0 or hum > 75) and not es_verano else "Baja probabilidad"
 
     return {
         "fecha_objetivo": payload.fecha_objetivo,
@@ -114,8 +129,8 @@ def predecir_calidad(payload: PredictRequest):
             "humedad_hum": f"{hum:.0f}%",
             "precipitacion_llu": lluvia_txt,
             "viento": f"{abs(vel):.1f} km/h / {obtener_direccion_viento(dir_viento)}",
-            "radiacion_solar_rs": f"{max(20.0, rs + (factor * 50)):.1f} W/m²",
-            "indice_uv_iuv": f"{min(max(0, int(iuv + (factor * 4))), 15)} (Proyección)",
+            "radiacion_solar_rs": f"{rs_calculada:.1f} W/m²",
+            "indice_uv_iuv": f"{iuv_dinamico} (Proyección)",
             "presion_pre": f"{pre:.0f} hPa"
         }
     }

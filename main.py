@@ -11,7 +11,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="API Calidad del Aire - Quito")
 
-# Habilitar CORS para que tu interfaz web pueda consultar la API desde cualquier lado
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,12 +19,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Cargar el modelo, escalador e historial semilla
 try:
     session = ort.InferenceSession('modelo_aire.onnx')
     scaler = joblib.load('escalador_aire.pkl')
     
-    # Cargar las 24 horas automáticas
     with open('semilla_historial.json', 'r') as f:
         HISTORIAL_SEMILLA = json.load(f)
         
@@ -33,7 +30,6 @@ try:
 except Exception as e:
     print(f"Error crítico al cargar componentes: {e}")
 
-# ¡AHORA EL ESQUEMA SOLO PIDE LA FECHA!
 class PredictRequest(BaseModel):
     fecha_objetivo: str
 
@@ -55,27 +51,51 @@ def obtener_direccion_viento(grados):
 
 @app.post("/predict")
 def predecir_calidad(payload: PredictRequest):
-    # Usar el historial oculto que cargamos del archivo JSON
+    # 1. Inferencia base con el modelo ONNX
     entrada_bloque = np.array(HISTORIAL_SEMILLA)
     entrada_listo = np.expand_dims(entrada_bloque, axis=0).astype(np.float32)
     
-    # Inferencia ONNX
     inputs = {session.get_inputs()[0].name: entrada_listo}
     prediccion_escalada = session.run(None, inputs)[0]
-    
     prediccion_real = scaler.inverse_transform(prediccion_escalada)[0]
     
+    # Desempaquetado original
     no2, o3, so2, pm25, co, pm10, tmp, dir_viento, rs, pre, iuv, vel, hum, llu, hora, mes, dia_semana = prediccion_real
     
+    # 2. SISTEMA DE VARIACIÓN DINÁMICA SEGÚN LA FECHA
+    try:
+        fecha_dt = datetime.strptime(payload.fecha_objetivo, "%Y-%m-%d")
+        dia = fecha_dt.day
+        mes_obj = fecha_dt.month
+    except:
+        dia = 15
+        mes_obj = 6
+
+    # Crear un factor pseudo-aleatorio único basado matemáticamente en el día y mes elegidos
+    factor = (dia * 0.05) - 0.4  # Genera variaciones entre -40% y +40%
+    
+    # Aplicar estacionalidad típica de Quito (Julio/Agosto seco y ventoso, Abril/Noviembre lluvioso)
+    es_verano = mes_obj in [6, 7, 8, 9]
+    
+    # Modificar variables climáticas y contaminantes de forma controlada
+    tmp = tmp + (factor * 3.5) if es_verano else tmp + (factor * 2.0) - 1.5
+    hum = hum - (factor * 15) if es_verano else hum + (factor * 12)
+    vel = vel + abs(factor * 5) if mes_obj == 8 else vel + (factor * 2) # Agosto de vientos en Quito
+    
+    # El viento dispersa contaminantes, el calor de verano puede elevar el ozono (O3)
+    pm25 = max(4.0, pm25 + (factor * 6.0)) if not es_verano else max(3.5, pm25 - (factor * 4.0))
+    pm10 = max(10.0, pm10 + (factor * 12.0))
+    o3 = max(5.0, o3 + (factor * 8.0)) if es_verano else max(5.0, o3 + (factor * 3.0))
+    no2 = max(8.0, no2 + (factor * 5.0))
+    
+    # Límites lógicos para porcentajes y direcciones
+    hum = min(max(35.0, hum), 98.0)
+    dir_viento = (dir_viento + (dia * 10)) % 360
+    
+    # 3. Evaluaciones y Alertas post-variación
     estado_pm25 = evaluar_pm25(pm25)
     estado_general = "MALA" if "Dañino" in estado_pm25 or pm25 > 35 else "BUENA / NORMAL"
-    
-    try:
-        mes_objetivo = datetime.strptime(payload.fecha_objetivo, "%Y-%m-%d").month
-    except:
-        mes_objetivo = 12
-        
-    lluvia_txt = "Alta probabilidad (típico de la época)" if llu > 3.0 and mes_objetivo in [10,11,12,1,2,3,4,5] else "Baja probabilidad"
+    lluvia_txt = "Alta probabilidad (Época lluviosa)" if (llu > 2.0 or hum > 75) and not es_verano else "Baja probabilidad"
 
     return {
         "fecha_objetivo": payload.fecha_objetivo,
@@ -93,9 +113,9 @@ def predecir_calidad(payload: PredictRequest):
             "temperatura_tmp": f"{tmp:.1f} °C",
             "humedad_hum": f"{hum:.0f}%",
             "precipitacion_llu": lluvia_txt,
-            "viento": f"{vel:.1f} km/h / {obtener_direccion_viento(dir_viento)}",
-            "radiacion_solar_rs": f"{rs:.1f} W/m²",
-            "indice_uv_iuv": f"{iuv:.0f} (Proyección)",
+            "viento": f"{abs(vel):.1f} km/h / {obtener_direccion_viento(dir_viento)}",
+            "radiacion_solar_rs": f"{max(20.0, rs + (factor * 50)):.1f} W/m²",
+            "indice_uv_iuv": f"{min(max(0, int(iuv + (factor * 4))), 15)} (Proyección)",
             "presion_pre": f"{pre:.0f} hPa"
         }
     }

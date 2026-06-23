@@ -1,7 +1,6 @@
 fastapi
 uvicorn
-tensorflow-cpu
+onnxruntime
 joblib
 scikit-learn
 pydantic
-openpyxl

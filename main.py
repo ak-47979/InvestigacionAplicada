@@ -4,10 +4,9 @@ from pydantic import BaseModel
 import numpy as np
 import onnxruntime as ort
 import joblib
-import json
 from datetime import datetime, timedelta
 
-app = FastAPI(title="Predicción de Calidad del Aire - Quito Centro Histórico")
+app = FastAPI(title="Predicción de Calidad del Aire y Clima - Quito Centro Histórico")
 
 # Configuración de CORS obligatoria para conectar tu index.html
 app.add_middleware(
@@ -19,47 +18,49 @@ app.add_middleware(
 )
 
 # Matriz base real del Centro Histórico (24 horas x 17 variables)
+# Importante: Esta matriz ya debe estar escalada (entre 0 y 1) ya que sirve de look-back para el modelo
 MATRIZ_BASE_CENTRO = np.array([
-    [0.20977061810541064, 0.09834545713878191, 0.2571556350626118, 0.02342695940144732, 0.10453400503778337, 0.16696932515337426, 0.3719951923076923, 0.11878629581260941, 0.0, 0.5496264674493005, 0.0, 0.16387959866220736, 0.5733741554054054, 0.0, 0.0, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.18513764085009274, 0.17889087656529518, 0.10535999018766098, 0.06624685138539044, 0.10105521472392638, 0.37079326923076916, 0.11497957709300065, 0.0, 0.5037353255069377, 0.0, 0.3076923076923077, 0.5690456081081081, 0.0, 0.043478260869565216, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.07944658393952361, 0.16279069767441862, 0.16043174291671777, 0.08513853904282116, 0.11592638036809817, 0.32572115384615385, 0.16863486065186584, 0.0, 0.4781216648879507, 0.0, 0.21237458193979933, 0.6782094594594594, 0.0, 0.08695652173913043, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.05505634003708458, 0.2110912343470483, 0.10719980375321968, 0.08312342569269522, 0.27239263803680985, 0.3076923076923076, 0.226680374558893, 0.0, 0.462113127001075, 0.0, 0.17892976588628765, 0.6884501689189189, 0.0, 0.13043478260869565, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.02160890029952931, 0.4136851520572451, 0.11639887158101313, 0.0743073047858942, 0.2396564417177914, 0.2776442307692307, 0.2521048098029953, 0.0, 0.4866595517609511, 0.0, 0.16555183946488294, 0.7279349662162161, 0.0, 0.17391304347826086, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.021965482812722866, 0.4396243291592129, 0.14865693609714214, 0.12241813602015113, 0.3008588957055215, 0.2998798076923077, 0.19972769457334186, 0.0, 0.5112059765208272, 0.0, 0.12876254180602006, 0.7037584459459459, 0.0, 0.21739130434782608, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.03580088432463272, 0.4651162790697675, 0.16055439715442169, 0.2327455919395466, 0.1560245398773006, 0.27283653846153844, 0.454416627302787, 0.024805714734280556, 0.5699039487726907, 0.004053271569195137, 0.06688963210702341, 0.7263513513513514, 0.0, 0.2608695652173913, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.11560405077734989, 0.4499105545617174, 0.11517232920397401, 0.20453400503778338, 0.26385276073619635, 0.4879807692307693, 0.07438383950651588, 0.2143810346181019, 0.5976520811099277, 0.042848870874348584, 0.04849498327759197, 0.5040118243243243, 0.0, 0.30434782608695654, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.21901297960348026, 0.23658318425760289, 0.08573531215503497, 0.15793450881612092, 0.09683435582822086, 0.6592548076923075, 0.3684181277612603, 0.40984378679645184, 0.626467449306304, 0.16386797915460335, 0.10367892976588629, 0.3815456081081081, 0.0, 0.34782608695652173, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.3023819711881329, 0.13506261180679785, 0.1955108549000368, 0.0743073047858942, 0.2308711656441718, 0.6586538461538463, 0.2794187112728889, 0.5651935002747468, 0.647812166488805, 0.37637521713954836, 0.33277591973244147, 0.3628589527027027, 0.0, 0.3913043478260869, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.3180002852660106, 0.1650268336314848, 0.040230589966883355, 0.063727959697733, 0.28584049079754603, 0.6850961538461537, 0.2527161076995748, 0.740324986262658, 0.6296691568836792, 0.6189924724956573, 0.33277591973244147, 0.37225506756756754, 0.0, 0.43478260869565216, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.351661674511482, 0.06216457960644007, 0.1480436649086226, 0.06272040302267003, 0.21855214723926383, 0.7265625, 0.2143432715551974, 0.7224271920872909, 0.5837780149413021, 0.7527504342790967, 0.4765886287625418, 0.34121621621621623, 0.0, 0.4782608695652174, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.3598630723149337, 0.023703041144901613, 0.05126947136023549, 0.057430730478589424, 0.43695705521472394, 0.7770432692307692, 0.2586067965211592, 0.8801318784833975, 0.5250800426894386, 0.6027793862188767, 0.48327759197324416, 0.3132390202702703, 0.0, 0.5217391304347826, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.3749821708743403, 0.0353309481216458, 0.11811603090886791, 0.052141057934508815, 0.4107484662576687, 0.7800480769230769, 0.1876684542499097, 0.646911060522804, 0.4535752401280746, 0.31731325998841925, 0.4331103678929766, 0.31461148648648646, 0.0, 0.5652173913043478, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.3903152189416631, 0.03130590339892665, 0.130626763154667, 0.06070528967254408, 0.41865030674846626, 0.7427884615384615, 0.19853288504820915, 0.3140748881387864, 0.3767342582710853, 0.21598147075854082, 0.431438127090301, 0.3364653716216216, 0.0, 0.6086956521739131, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.3443160747396948, 0.04561717352415027, 0.11848399362197964, 0.07506297229219143, 0.15440490797546014, 0.6820913461538463, 0.10536552835588653, 0.23369181254415572, 0.3436499466382088, 0.15460335842501446, 0.4481605351170569, 0.41100084459459457, 0.0, 0.6521739130434783, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.35194694052203684, 0.03756708407871199, 0.058506071384766344, 0.07984886649874055, 0.30984049079754605, 0.6544471153846154, 0.06771513518019395, 0.3110919224428919, 0.35538954108858434, 0.04921829762594094, 0.5351170568561873, 0.4582981418918919, 0.0, 0.6956521739130435, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.2734987876194552, 0.06037567084078713, 0.15147798356433215, 0.08387909319899245, 0.09619631901840492, 0.5853365384615383, 0.041484898163327684, 0.06209278593296177, 0.3874066168623358, 0.019108280254777073, 0.45150501672240806, 0.47645692567567566, 0.0, 0.7391304347826086, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.19262587362715736, 0.06932021466905189, 0.1511100208512204, 0.11284634760705291, 0.14228220858895704, 0.5414663461538463, 0.09180582955903192, 0.005573435905487086, 0.4514407684098245, 0.0005790387955993052, 0.30267558528428096, 0.4921875, 0.0, 0.7826086956521738, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.10890029952931109, 0.0885509838998211, 0.09787808168772232, 0.14609571788413098, 0.28505521472392636, 0.485576923076923, 0.18380616299424823, 0.0, 0.5400213447171893, 0.0, 0.3494983277591973, 0.5842483108108109, 0.0, 0.8260869565217391, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.11624589930109828, 0.08810375670840788, 0.13982583098246046, 0.12418136020151134, 0.12132515337423314, 0.46814903846153844, 0.16977409764094584, 0.0, 0.6296691568836792, 0.0, 0.38294314381270905, 0.5894214527027026, 0.0, 0.8695652173913043, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.19669091427756383, 0.1319320214669052, 0.1200784987121305, 0.07909319899244333, 0.09011042944785276, 0.43689903846153844, 0.10350384839812166, 0.0, 0.6894343649946677, 0.0, 0.4665551839464883, 0.593433277027027, 0.0, 0.9130434782608695, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.1977606618171445, 0.16771019677996424, 0.14485465472832088, 0.07027707808564232, 0.26336196319018407, 0.4188701923076923, 0.07885742865875685, 0.0, 0.7075773745997935, 0.0, 0.41471571906354515, 0.5935388513513513, 0.0, 0.9565217391304348, 0.9999999999999999, 0.3333333333333333],
-    [0.20977061810541064, 0.16374269005847955, 0.19767441860465115, 0.11860664785968356, 0.09244332493702771, 0.07631901840490798, 0.3966346153846153, 0.03734474422740282, 0.0, 0.6851654215581817, 0.0, 0.14046822742474915, 0.5933277027027027, 0.0, 1.0, 0.9999999999999999, 0.3333333333333333]
+    [0.2097706, 0.0983454, 0.2571556, 0.0234269, 0.1045340, 0.1669693, 0.3719951, 0.1187862, 0.0, 0.5496264, 0.0, 0.1638795, 0.5733741, 0.0, 0.0, 1.0, 0.3333333],
+    [0.2097706, 0.1851376, 0.1788908, 0.1053600, 0.0662468, 0.1010552, 0.3707932, 0.1149795, 0.0, 0.5037353, 0.0, 0.3076923, 0.5690456, 0.0, 0.0434782, 1.0, 0.3333333],
+    [0.2097706, 0.0794465, 0.1627907, 0.1604317, 0.0851385, 0.1159263, 0.3257211, 0.1686349, 0.0, 0.4781216, 0.0, 0.2123746, 0.6782094, 0.0, 0.0869565, 1.0, 0.3333333],
+    [0.2097706, 0.0550563, 0.2110912, 0.1071998, 0.0831234, 0.2723926, 0.3076923, 0.2266804, 0.0, 0.4621131, 0.0, 0.1789298, 0.6884501, 0.0, 0.1304348, 1.0, 0.3333333],
+    [0.2097706, 0.0216089, 0.4136852, 0.1163989, 0.0743073, 0.2396564, 0.2776442, 0.2521048, 0.0, 0.4866596, 0.0, 0.1655518, 0.7279350, 0.0, 0.1739130, 1.0, 0.3333333],
+    [0.2097706, 0.0219655, 0.4396243, 0.1486569, 0.1224181, 0.3008589, 0.2998798, 0.1997277, 0.0, 0.5112060, 0.0, 0.1287625, 0.7037584, 0.0, 0.2173913, 1.0, 0.3333333],
+    [0.2097706, 0.0358009, 0.4651163, 0.1605544, 0.2327456, 0.1560245, 0.2728365, 0.4544166, 0.0248057, 0.5699039, 0.0040533, 0.0668896, 0.7263514, 0.0, 0.2608696, 1.0, 0.3333333],
+    [0.2097706, 0.1156041, 0.4499106, 0.1151723, 0.2045340, 0.2638528, 0.4879808, 0.0743838, 0.2143810, 0.5976521, 0.0428489, 0.0484950, 0.5040118, 0.0, 0.3043478, 1.0, 0.3333333],
+    [0.2097706, 0.2190130, 0.2365832, 0.0857353, 0.1579345, 0.0968344, 0.6592548, 0.3684181, 0.4098438, 0.6264674, 0.1638680, 0.1036789, 0.3815456, 0.0, 0.3478261, 1.0, 0.3333333],
+    [0.2097706, 0.3023820, 0.1350626, 0.1955109, 0.0743073, 0.2308712, 0.6586538, 0.2794187, 0.5651935, 0.6478122, 0.3763752, 0.3327759, 0.3628590, 0.0, 0.3913043, 1.0, 0.3333333],
+    [0.2097706, 0.3180003, 0.1650268, 0.0402306, 0.0637280, 0.2858405, 0.6850962, 0.2527161, 0.7403250, 0.6296692, 0.6189925, 0.3327759, 0.3722551, 0.0, 0.4347826, 1.0, 0.3333333],
+    [0.2097706, 0.3516617, 0.0621646, 0.1480437, 0.0627204, 0.2185521, 0.7265625, 0.2143433, 0.7224272, 0.5837780, 0.7527504, 0.4765886, 0.3412162, 0.0, 0.4782609, 1.0, 0.3333333],
+    [0.2097706, 0.3598631, 0.0237030, 0.0512695, 0.0574307, 0.4369571, 0.7770433, 0.2586068, 0.8801319, 0.5250800, 0.6027794, 0.4832776, 0.3132390, 0.0, 0.5217391, 1.0, 0.3333333],
+    [0.2097706, 0.3749822, 0.0353309, 0.1181160, 0.0521411, 0.4107485, 0.7800481, 0.1876685, 0.6469111, 0.4535752, 0.3173133, 0.4331104, 0.3146115, 0.0, 0.5652174, 1.0, 0.3333333],
+    [0.2097706, 0.3903152, 0.0313059, 0.1306268, 0.0607053, 0.4186503, 0.7427885, 0.1985329, 0.3140749, 0.3767343, 0.2159815, 0.4314381, 0.3364654, 0.0, 0.6086957, 1.0, 0.3333333],
+    [0.2097706, 0.3443161, 0.0456172, 0.1184840, 0.0750630, 0.1544049, 0.6820913, 0.1053655, 0.2336918, 0.3436500, 0.1546034, 0.4481605, 0.4110008, 0.0, 0.6521739, 1.0, 0.3333333],
+    [0.2097706, 0.3519469, 0.0375671, 0.0585061, 0.0798489, 0.3098405, 0.6544471, 0.0677151, 0.3110919, 0.3553895, 0.0492183, 0.5351171, 0.4582981, 0.0, 0.6956522, 1.0, 0.3333333],
+    [0.2097706, 0.2734988, 0.0603757, 0.1514780, 0.0838790, 0.0961963, 0.5853365, 0.0414849, 0.0620928, 0.3874066, 0.0191083, 0.4515050, 0.4764569, 0.0, 0.7391304, 1.0, 0.3333333],
+    [0.2097706, 0.1926259, 0.0693202, 0.1511100, 0.1128463, 0.1422822, 0.5414663, 0.0918058, 0.0055734, 0.4514408, 0.0005790, 0.3026756, 0.4921875, 0.0, 0.7826087, 1.0, 0.3333333],
+    [0.2097706, 0.1089003, 0.0885510, 0.0978781, 0.1460957, 0.2850552, 0.4855769, 0.1838062, 0.0, 0.5400213, 0.0, 0.3494983, 0.5842483, 0.0, 0.8260870, 1.0, 0.3333333],
+    [0.2097706, 0.1162459, 0.0881038, 0.1398258, 0.1241814, 0.1213251, 0.4681490, 0.1697741, 0.0, 0.6296692, 0.0, 0.3829431, 0.5894215, 0.0, 0.8695652, 1.0, 0.3333333],
+    [0.2097706, 0.1966909, 0.1319320, 0.1200785, 0.0790932, 0.0901104, 0.4368990, 0.1035038, 0.0, 0.6894344, 0.0, 0.4665552, 0.5934333, 0.0, 0.9130435, 1.0, 0.3333333],
+    [0.2097706, 0.1977607, 0.1677102, 0.1448547, 0.0702771, 0.2633620, 0.4188702, 0.0788574, 0.0, 0.7075774, 0.0, 0.4147157, 0.5935389, 0.0, 0.9565217, 1.0, 0.3333333],
+    [0.2097706, 0.1637427, 0.1976744, 0.1186066, 0.0924433, 0.0763190, 0.3966346, 0.0373447, 0.0, 0.6851654, 0.0, 0.1404682, 0.5933277, 0.0, 1.0, 1.0, 0.3333333]
 ], dtype=np.float32)
 
 try:
+    # Carga de recursos (Modelo entrenado con Sigmoid y Escalador guardado en Colab)
     session = ort.InferenceSession('modelo_aire.onnx')
     scaler = joblib.load('escalador_aire.pkl')
-    print("¡Recursos cargados con éxito!")
+    print("¡Recursos ONNX y de escalamiento acoplados correctamente!")
 except Exception as e:
-    print(f"Error crítico al cargar datos: {e}")
+    print(f"Error crítico al cargar componentes: {e}")
 
 def generar_entrada_dinamica_del_dia() -> np.ndarray:
     hoy = datetime.now()
     seed_del_dia = int(hoy.strftime("%Y%m%d"))
     rng = np.random.default_rng(seed_del_dia)
-    ruido = rng.uniform(-0.015, 0.015, size=MATRIZ_BASE_CENTRO.shape)
+    ruido = rng.uniform(-0.01, 0.01, size=MATRIZ_BASE_CENTRO.shape)
     matriz_dinamica = np.clip(MATRIZ_BASE_CENTRO + ruido, 0.0, 1.0)
-    matriz_dinamica[:, -1] = MATRIZ_BASE_CENTRO[:, -1]
+    matriz_dinamica[:, -1] = MATRIZ_BASE_CENTRO[:, -1] # Mantener constante el día de la semana
     return matriz_dinamica
 
 def evaluar_pm25(valor):
@@ -73,24 +74,34 @@ def obtener_direccion_viento(grados):
     indice = int((grados / 22.5) + .5) % 16
     return direcciones[indice]
 
-# --- NUEVA FUNCIÓN PARA REDACTAR EL ANÁLISIS CIUDADANO ---
+# --- NUEVA LOGICA DE TEXTO 100% DINÁMICA ---
 def generar_texto_explicativo(pm25, pm10, o3, no2, tmp, hum, uv) -> str:
     estado = evaluar_pm25(pm25)
-    consejo = ""
+    
     if estado == "Bueno":
-        consejo = "El aire es ideal para actividades al aire libre y deportes en las plazas coloniales."
+        consejo_aire = "El aire es ideal para actividades al aire libre y deportes en las plazas coloniales."
     elif estado == "Normal":
-        consejo = "La calidad del aire es aceptable; sin embargo, personas extremadamente sensibles podrían experimentar síntomas leves."
+        consejo_aire = "La calidad del aire es aceptable; sin embargo, personas extremadamente sensibles podrían experimentar síntomas leves."
     elif estado == "Dañino para grupos sensibles":
-        consejo = "Se recomienda que niños, adultos mayores y personas con problemas respiratorios (como asma) reduzcan los esfuerzos prolongados al aire libre."
+        consejo_aire = "Se recomienda que niños, adultos mayores y personas con afecciones respiratorias crónicas reduzcan esfuerzos prolongados en el exterior."
     else:
-        consejo = "¡Alerta ambiental! Se sugiere usar mascarilla en calles de alto flujo vehicular y evitar deportes al aire libre."
+        consejo_aire = "¡Alerta ambiental! Se sugiere usar mascarilla en calles de alto flujo vehicular y suspender deportes al aire libre."
+
+    # Diagnóstico dinámico de radiación calibrado para la altitud de Quito
+    if uv >= 11:
+        consejo_uv = f"El índice UV se sitúa en un nivel {uv} (Extremadamente Alto). Es imperativo evitar la exposición directa y usar protección total."
+    elif uv >= 6:
+        consejo_uv = f"El índice UV registrará un nivel {uv} (Muy Alto). El uso de protector solar, sombrero y gafas es altamente recomendable."
+    elif uv >= 3:
+        consejo_uv = f"El índice UV estará en un rango de {uv} (Moderado). Se aconseja usar protector solar si pasa períodos prolongados bajo el sol."
+    else:
+        consejo_uv = f"El índice UV se mantendrá bajo ({uv}), requiriendo precauciones estándar mínimas."
 
     texto = (
         f"Para la fecha consultada en el Centro Histórico de Quito, se registra un índice de material particulado "
-        f"fino PM2.5 de {pm25} µg/m³, lo que clasifica la calidad del aire como '{estado}'. {consejo} "
-        f"En el aspecto climático, se estima una temperatura de {tmp}°C con una humedad relativa del {hum}%. "
-        f"El índice de Radiación Ultravioleta (UV) se situará en un nivel {uv}, por lo que el uso de protector solar es altamente recomendable."
+        f"fino PM2.5 de {pm25} µg/m³, lo que clasifica la calidad del aire como '{estado}'. {consejo_aire} "
+        f"En el aspecto climático, se estima una temperatura promedio de {tmp}°C con una humedad relativa del {hum}%. "
+        f"{consejo_uv}"
     )
     return texto
 
@@ -110,11 +121,16 @@ def predecir_individual(fecha: str = Query(..., description="Fecha YYYY-MM-DD"))
     entrada_bloque = generar_entrada_dinamica_del_dia()
     entrada_listo = np.expand_dims(entrada_bloque, axis=0).astype(np.float32)
     inputs = {session.get_inputs()[0].name: entrada_listo}
+    
+    # El modelo ONNX con Sigmoid devuelve valores estrictamente acotados entre 0 y 1
     prediccion_escalada = session.run(None, inputs)[0]
+    
+    # Recuperamos los valores físicos reales gracias al escalador guardado
     prediccion_real = scaler.inverse_transform(prediccion_escalada)[0]
     
     no2_b, o3_b, so2_b, pm25_b, co_b, pm10_b, tmp_b, dir_b, rs_b, pre_b, iuv_b, vel_b, hum_b, llu_b, _, _, _ = prediccion_real
 
+    # Ajustes estacionales de simulación según el día consultado
     dia = target_dt.day
     mes_obj = target_dt.month
     factor = (dia * 0.05) - 0.4
@@ -129,14 +145,17 @@ def predecir_individual(fecha: str = Query(..., description="Fecha YYYY-MM-DD"))
     no2 = max(6.0, no2_b + (factor * 6.0))
     so2 = max(1.5, so2_b + (factor * 1.5))
     co = max(0.1, co_b + (factor * 0.2))
+    
+    # Calibración de Radiación Solar e Índice UV acoplado para Quito (2800m de altura)
     rs_calculada = max(10.0, rs_b + (factor * 180.0)) if es_verano else max(5.0, rs_b + (factor * 90.0))
     
-    if rs_calculada < 50.0: iuv_dinamico = 0
-    elif rs_calculada < 150.0: iuv_dinamico = int(2 + factor * 2)
-    elif rs_calculada < 300.0: iuv_dinamico = int(5 + factor * 3)
-    else: iuv_dinamico = int(11 + factor * 4)
-    iuv_dinamico = min(max(0, iuv_dinamico), 14)
-
+    if rs_calculada < 40.0: iuv_dinamico = 0
+    elif rs_calculada < 140.0: iuv_dinamico = int(1 + (rs_calculada / 70))
+    elif rs_calculada < 380.0: iuv_dinamico = int(3 + (rs_calculada - 140) / 80)
+    elif rs_calculada < 720.0: iuv_dinamico = int(6 + (rs_calculada - 380) / 85)
+    else: iuv_dinamico = int(11 + (rs_calculada - 720) / 90)
+    
+    iuv_dinamico = min(max(0, iuv_dinamico), 15)
     lluvia_txt = "Alta" if hum > 82.0 else ("Moderada" if hum > 68.0 else "Baja probabilidad")
     dir_viento = (dir_b + (dia * 15)) % 360
 
@@ -147,6 +166,7 @@ def predecir_individual(fecha: str = Query(..., description="Fecha YYYY-MM-DD"))
     tmp_r = round(float(tmp), 1)
     hum_r = int(hum)
 
+    # Generación del párrafo dinámico explicativo
     analisis_ciudadano = generar_texto_explicativo(pm25_r, pm10_r, o3_r, no2_r, tmp_r, hum_r, iuv_dinamico)
 
     return {
@@ -187,7 +207,6 @@ def predecir_rango(
     resultados_rango = []
     current_dt = start_dt
 
-    # Acumuladores para promedios
     sum_pm25, sum_pm10, sum_no2, sum_o3, sum_tmp, sum_hum, sum_uv = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
     while current_dt <= end_dt:
@@ -206,18 +225,19 @@ def predecir_rango(
         no2 = max(6.0, no2_b + (factor * 6.0))
         so2 = max(1.5, so2_b + (factor * 1.5))
         co = max(0.1, co_b + (factor * 0.2))
+        
         rs_calculada = max(10.0, rs_b + (factor * 180.0)) if es_verano else max(5.0, rs_b + (factor * 90.0))
         
-        if rs_calculada < 50.0: iuv_dinamico = 0
-        elif rs_calculada < 150.0: iuv_dinamico = int(2 + factor * 2)
-        elif rs_calculada < 300.0: iuv_dinamico = int(5 + factor * 3)
-        else: iuv_dinamico = int(11 + factor * 4)
-        iuv_dinamico = min(max(0, iuv_dinamico), 14)
+        if rs_calculada < 40.0: iuv_dinamico = 0
+        elif rs_calculada < 140.0: iuv_dinamico = int(1 + (rs_calculada / 70))
+        elif rs_calculada < 380.0: iuv_dinamico = int(3 + (rs_calculada - 140) / 80)
+        elif rs_calculada < 720.0: iuv_dinamico = int(6 + (rs_calculada - 380) / 85)
+        else: iuv_dinamico = int(11 + (rs_calculada - 720) / 90)
+        iuv_dinamico = min(max(0, iuv_dinamico), 15)
 
         lluvia_txt = "Alta" if hum > 82.0 else ("Moderada" if hum > 68.0 else "Baja probabilidad")
         dir_viento = (dir_b + (dia * 15)) % 360
         
-        # Sumar a acumuladores
         sum_pm25 += pm25
         sum_pm10 += pm10
         sum_no2 += no2
@@ -237,7 +257,6 @@ def predecir_rango(
         })
         current_dt += timedelta(days=1)
 
-    # Cálculo de promedios del rango
     total_dias = len(resultados_rango)
     prom_pm25 = round(sum_pm25 / total_dias, 1)
     prom_pm10 = round(sum_pm10 / total_dias, 1)
@@ -247,22 +266,20 @@ def predecir_rango(
     prom_hum = int(sum_hum / total_dias)
     prom_uv = round(sum_uv / total_dias, 1)
 
-    # Redacción de la conclusión basada en el promedio general del rango
     estado_promedio = evaluar_pm25(prom_pm25)
     if estado_promedio in ["Bueno", "Normal"]:
         conclusion = (
             f"Conclusión general: Durante este rango de fechas, el Centro Histórico de Quito mantendrá un patrón atmosférico "
-            f"saludable y estable, ideal para la afluencia turística habitual. El promedio general de contaminación se conserva dentro de los límites admisibles."
+            f"saludable y estable con un promedio de PM2.5 de {prom_pm25} µg/m³. Ideal para la afluencia turística habitual y actividades al aire libre."
         )
     else:
         conclusion = (
-            f"Conclusión general: El periodo evaluado muestra tendencias críticas de acumulación de contaminantes, "
-            f"con promedios que superan la norma técnica recomendada. Esto es propicio de días secos o con alta congestión vehicular en el casco colonial, "
-            f"ameritando atención preventiva en grupos vulnerables."
+            f"Conclusión general: El periodo evaluado muestra tendencias críticas de acumulación de material particulado fino, "
+            f"registrando un promedio de {prom_pm25} µg/m³ que califica como '{estado_promedio}'. Se aconseja tomar precauciones en el casco colonial, especialmente en niños y adultos mayores."
         )
 
     return {
-        "rango_dias_procesados": total_dias,
+        "rango_dias_processed": total_dias,
         "limite_aplicado": dias_solicitados > 31,
         "resumen_rango": {
             "promedio_pm25": prom_pm25,

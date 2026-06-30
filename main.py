@@ -1,6 +1,5 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 import numpy as np
 import onnxruntime as ort
 import joblib
@@ -17,8 +16,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ====================================================================
+# CARGA DIRECTA DE RECURSOS (Sin try/except para evitar el NameError)
+# ====================================================================
+# Asegúrate de que estos dos archivos estén subidos en la raíz junto a este main.py
+session = ort.InferenceSession('modelo_aire.onnx')
+scaler = joblib.load('escalador_aire.pkl')
+print("¡Recursos ONNX y de escalamiento acoplados correctamente en memoria!")
+
 # Matriz base real del Centro Histórico (24 horas x 17 variables)
-# Importante: Esta matriz ya debe estar escalada (entre 0 y 1) ya que sirve de look-back para el modelo
 MATRIZ_BASE_CENTRO = np.array([
     [0.2097706, 0.0983454, 0.2571556, 0.0234269, 0.1045340, 0.1669693, 0.3719951, 0.1187862, 0.0, 0.5496264, 0.0, 0.1638795, 0.5733741, 0.0, 0.0, 1.0, 0.3333333],
     [0.2097706, 0.1851376, 0.1788908, 0.1053600, 0.0662468, 0.1010552, 0.3707932, 0.1149795, 0.0, 0.5037353, 0.0, 0.3076923, 0.5690456, 0.0, 0.0434782, 1.0, 0.3333333],
@@ -46,29 +52,13 @@ MATRIZ_BASE_CENTRO = np.array([
     [0.2097706, 0.1637427, 0.1976744, 0.1186066, 0.0924433, 0.0763190, 0.3966346, 0.0373447, 0.0, 0.6851654, 0.0, 0.1404682, 0.5933277, 0.0, 1.0, 1.0, 0.3333333]
 ], dtype=np.float32)
 
-session = None
-scaler = None
-
-try:
-    session = ort.InferenceSession(
-        'modelo_aire.onnx',
-        providers=['CPUExecutionProvider']
-    )
-
-    scaler = joblib.load('escalador_aire.pkl')
-
-    print("¡Recursos ONNX y escalador cargados correctamente!")
-
-except Exception as e:
-    print(f"Error crítico al cargar componentes: {e}")
-
 def generar_entrada_dinamica_del_dia() -> np.ndarray:
     hoy = datetime.now()
     seed_del_dia = int(hoy.strftime("%Y%m%d"))
     rng = np.random.default_rng(seed_del_dia)
     ruido = rng.uniform(-0.01, 0.01, size=MATRIZ_BASE_CENTRO.shape)
     matriz_dinamica = np.clip(MATRIZ_BASE_CENTRO + ruido, 0.0, 1.0)
-    matriz_dinamica[:, -1] = MATRIZ_BASE_CENTRO[:, -1] # Mantener constante el día de la semana
+    matriz_dinamica[:, -1] = MATRIZ_BASE_CENTRO[:, -1]
     return matriz_dinamica
 
 def evaluar_pm25(valor):
@@ -82,7 +72,6 @@ def obtener_direccion_viento(grados):
     indice = int((grados / 22.5) + .5) % 16
     return direcciones[indice]
 
-
 def generar_texto_explicativo(pm25, pm10, o3, no2, tmp, hum, uv) -> str:
     estado = evaluar_pm25(pm25)
     
@@ -95,7 +84,6 @@ def generar_texto_explicativo(pm25, pm10, o3, no2, tmp, hum, uv) -> str:
     else:
         consejo_aire = "¡Alerta ambiental! Se sugiere usar mascarilla en calles de alto flujo vehicular y suspender deportes al aire libre."
 
-    # Diagnóstico dinámico de radiación calibrado para la altitud de Quito
     if uv >= 11:
         consejo_uv = f"El índice UV se sitúa en un nivel {uv} (Extremadamente Alto). Es imperativo evitar la exposición directa y usar protección total."
     elif uv >= 6:
@@ -117,7 +105,7 @@ def generar_texto_explicativo(pm25, pm10, o3, no2, tmp, hum, uv) -> str:
 
 @app.get("/")
 def read_root():
-    return {"status": "online", "message": "API de Calidad del Aire - Centro Histórico de Quito lista."}
+    return {"status": "online", "message": "API de Calidad del Aire activa y cargada en CPU."}
 
 @app.get("/predict")
 def predecir_individual(fecha: str = Query(..., description="Fecha YYYY-MM-DD")):
@@ -130,15 +118,11 @@ def predecir_individual(fecha: str = Query(..., description="Fecha YYYY-MM-DD"))
     entrada_listo = np.expand_dims(entrada_bloque, axis=0).astype(np.float32)
     inputs = {session.get_inputs()[0].name: entrada_listo}
     
-    # El modelo ONNX con Sigmoid devuelve valores estrictamente acotados entre 0 y 1
     prediccion_escalada = session.run(None, inputs)[0]
-    
-    # Recuperamos los valores físicos reales gracias al escalador guardado
     prediccion_real = scaler.inverse_transform(prediccion_escalada)[0]
     
     no2_b, o3_b, so2_b, pm25_b, co_b, pm10_b, tmp_b, dir_b, rs_b, pre_b, iuv_b, vel_b, hum_b, llu_b, _, _, _ = prediccion_real
 
-    # Ajustes estacionales de simulación según el día consultado
     dia = target_dt.day
     mes_obj = target_dt.month
     factor = (dia * 0.05) - 0.4
@@ -154,7 +138,6 @@ def predecir_individual(fecha: str = Query(..., description="Fecha YYYY-MM-DD"))
     so2 = max(1.5, so2_b + (factor * 1.5))
     co = max(0.1, co_b + (factor * 0.2))
     
-    # Calibración de Radiación Solar e Índice UV acoplado para Quito (2800m de altura)
     rs_calculada = max(10.0, rs_b + (factor * 180.0)) if es_verano else max(5.0, rs_b + (factor * 90.0))
     
     if rs_calculada < 40.0: iuv_dinamico = 0
@@ -174,7 +157,6 @@ def predecir_individual(fecha: str = Query(..., description="Fecha YYYY-MM-DD"))
     tmp_r = round(float(tmp), 1)
     hum_r = int(hum)
 
-    # Generación del párrafo dinámico explicativo
     analisis_ciudadano = generar_texto_explicativo(pm25_r, pm10_r, o3_r, no2_r, tmp_r, hum_r, iuv_dinamico)
 
     return {

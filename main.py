@@ -46,11 +46,19 @@ MATRIZ_BASE_CENTRO = np.array([
     [0.2097706, 0.1637427, 0.1976744, 0.1186066, 0.0924433, 0.0763190, 0.3966346, 0.0373447, 0.0, 0.6851654, 0.0, 0.1404682, 0.5933277, 0.0, 1.0, 1.0, 0.3333333]
 ], dtype=np.float32)
 
+session = None
+scaler = None
+
 try:
-    # Carga de recursos (Modelo entrenado con Sigmoid y Escalador guardado en Colab)
-    session = ort.InferenceSession('modelo_aire.onnx')
+    session = ort.InferenceSession(
+        'modelo_aire.onnx',
+        providers=['CPUExecutionProvider']
+    )
+
     scaler = joblib.load('escalador_aire.pkl')
-    print("¡Recursos ONNX y de escalamiento acoplados correctamente!")
+
+    print("¡Recursos ONNX y escalador cargados correctamente!")
+
 except Exception as e:
     print(f"Error crítico al cargar componentes: {e}")
 

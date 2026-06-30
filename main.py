@@ -93,19 +93,18 @@ def generar_texto_explicativo(pm25, pm10, o3, no2, tmp, hum, uv) -> str:
     else:
         consejo_uv = f"El índice UV se mantendrá bajo ({uv}), requiriendo precauciones estándar mínimas."
 
-    texto = (
+    return (
         f"Para la fecha consultada en el Centro Histórico de Quito, se registra un índice de material particulado "
         f"fino PM2.5 de {pm25} µg/m³, lo que clasifica la calidad del aire como '{estado}'. {consejo_aire} "
         f"En el aspecto climático, se estima una temperatura promedio de {tmp}°C con una humedad relativa del {hum}%. "
         f"{consejo_uv}"
     )
-    return texto
 
 # --- ENDPOINTS ---
 
 @app.get("/")
 def read_root():
-    return {"status": "online", "message": "API de Calidad del Aire - Centro Histórico de Quito lista."}
+    return {"status": "online", "message": "API de Calidad del Aire activa."}
 
 @app.get("/predict")
 def predecir_individual(fecha: str = Query(..., description="Fecha YYYY-MM-DD")):
@@ -190,7 +189,6 @@ def predecir_rango(
     entrada_listo = np.expand_dims(entrada_bloque, axis=0).astype(np.float32)
     inputs = {session.get_inputs()[0].name: entrada_listo}
     
-    # Inferencia estable y única de ONNX fuera del bucle
     prediccion_escalada = session.run(None, inputs)[0]
     prediccion_real = scaler.inverse_transform(prediccion_escalada)[0]
     
@@ -238,6 +236,7 @@ def predecir_rango(
         sum_hum += float(hum)
         sum_uv += float(iuv_dinamico)
 
+        # Cada iteración guarda el desglose completo del día
         resultados_rango.append({
             "fecha": current_dt.strftime("%d/%m/%Y"),
             "estado_general": "Malo" if "Dañino" in evaluar_pm25(pm25) or pm25 > 35 else "Bueno",
@@ -270,6 +269,7 @@ def predecir_rango(
             f"registrando un promedio de {prom_pm25} µg/m³ que califica como '{estado_promedio}'. Se aconseja tomar precauciones en el casco colonial, especialmente en niños y adultos mayores."
         )
 
+    # Devolvemos el array mapeado tanto en "datos" como en "predicciones" para evitar fallos de lectura en el index.html
     return {
         "rango_dias_processed": total_dias,
         "limite_aplicado": dias_solicitados > 31,
@@ -284,5 +284,6 @@ def predecir_rango(
             "estado_promedio_periodo": estado_promedio,
             "conclusion_texto": conclusion
         },
-        "datos": resultados_rango
+        "datos": resultados_rango,
+        "predicciones": resultados_rango
     }

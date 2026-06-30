@@ -74,7 +74,7 @@ def obtener_direccion_viento(grados):
     indice = int((grados / 22.5) + .5) % 16
     return direcciones[indice]
 
-# --- NUEVA LOGICA DE TEXTO 100% DINÁMICA ---
+
 def generar_texto_explicativo(pm25, pm10, o3, no2, tmp, hum, uv) -> str:
     estado = evaluar_pm25(pm25)
     

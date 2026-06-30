@@ -20,7 +20,7 @@ app.add_middleware(
 # CARGA DE ARCHIVOS .PKL ORIGINALES (Antes del error de compatibilidad)
 # ====================================================================
 try:
-    model = joblib.load('modelo_aire.pkl')
+    model = joblib.load('modelo_aire.onnx')
     scaler = joblib.load('escalador_aire.pkl')
     print("¡Recursos .pkl cargados correctamente!")
 except Exception as e:

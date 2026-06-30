@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import numpy as np
-import onnxruntime as ort
 import joblib
 from datetime import datetime, timedelta
 
@@ -17,12 +17,14 @@ app.add_middleware(
 )
 
 # ====================================================================
-# CARGA DIRECTA DE RECURSOS (Sin try/except para evitar el NameError)
+# CARGA DE ARCHIVOS .PKL ORIGINALES (Antes del error de compatibilidad)
 # ====================================================================
-# Asegúrate de que estos dos archivos estén subidos en la raíz junto a este main.py
-session = ort.InferenceSession('modelo_aire.onnx')
-scaler = joblib.load('escalador_aire.pkl')
-print("¡Recursos ONNX y de escalamiento acoplados correctamente en memoria!")
+try:
+    model = joblib.load('modelo_aire.pkl')
+    scaler = joblib.load('escalador_aire.pkl')
+    print("¡Recursos .pkl cargados correctamente!")
+except Exception as e:
+    print(f"Error crítico al cargar componentes .pkl: {e}")
 
 # Matriz base real del Centro Histórico (24 horas x 17 variables)
 MATRIZ_BASE_CENTRO = np.array([
@@ -105,7 +107,7 @@ def generar_texto_explicativo(pm25, pm10, o3, no2, tmp, hum, uv) -> str:
 
 @app.get("/")
 def read_root():
-    return {"status": "online", "message": "API de Calidad del Aire activa y cargada en CPU."}
+    return {"status": "online", "message": "API de Calidad del Aire (Versión pkl) activa."}
 
 @app.get("/predict")
 def predecir_individual(fecha: str = Query(..., description="Fecha YYYY-MM-DD")):
@@ -115,10 +117,12 @@ def predecir_individual(fecha: str = Query(..., description="Fecha YYYY-MM-DD"))
         raise HTTPException(status_code=400, detail="Formato inválido. Use YYYY-MM-DD")
     
     entrada_bloque = generar_entrada_dinamica_del_dia()
-    entrada_listo = np.expand_dims(entrada_bloque, axis=0).astype(np.float32)
-    inputs = {session.get_inputs()[0].name: entrada_listo}
+    entrada_listo = np.expand_dims(entrada_bloque, axis=0) # [1, 24, 17]
     
-    prediccion_escalada = session.run(None, inputs)[0]
+    # Inferencia usando el modelo original de Keras/TF cargado con joblib
+    prediccion_escalada = model.predict(entrada_listo)
+    
+    # Inversa usando el escalador original
     prediccion_real = scaler.inverse_transform(prediccion_escalada)[0]
     
     no2_b, o3_b, so2_b, pm25_b, co_b, pm10_b, tmp_b, dir_b, rs_b, pre_b, iuv_b, vel_b, hum_b, llu_b, _, _, _ = prediccion_real
@@ -187,9 +191,9 @@ def predecir_rango(
         end_dt = start_dt + timedelta(days=30)
 
     entrada_bloque = generar_entrada_dinamica_del_dia()
-    entrada_listo = np.expand_dims(entrada_bloque, axis=0).astype(np.float32)
-    inputs = {session.get_inputs()[0].name: entrada_listo}
-    prediccion_escalada = session.run(None, inputs)[0]
+    entrada_listo = np.expand_dims(entrada_bloque, axis=0)
+    
+    prediccion_escalada = model.predict(entrada_listo)
     prediccion_real = scaler.inverse_transform(prediccion_escalada)[0]
     
     no2_b, o3_b, so2_b, pm25_b, co_b, pm10_b, tmp_b, dir_b, rs_b, pre_b, iuv_b, vel_b, hum_b, llu_b, _, _, _ = prediccion_real

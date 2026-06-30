@@ -19,7 +19,6 @@ app.add_middleware(
 )
 
 # Matriz base real del Centro Histórico (24 horas x 17 variables)
-# Reemplaza por completo al antiguo archivo 'semilla_historial.json'
 MATRIZ_BASE_CENTRO = np.array([
     [0.20977061810541064, 0.09834545713878191, 0.2571556350626118, 0.02342695940144732, 0.10453400503778337, 0.16696932515337426, 0.3719951923076923, 0.11878629581260941, 0.0, 0.5496264674493005, 0.0, 0.16387959866220736, 0.5733741554054054, 0.0, 0.0, 0.9999999999999999, 0.3333333333333333],
     [0.20977061810541064, 0.18513764085009274, 0.17889087656529518, 0.10535999018766098, 0.06624685138539044, 0.10105521472392638, 0.37079326923076916, 0.11497957709300065, 0.0, 0.5037353255069377, 0.0, 0.3076923076923077, 0.5690456081081081, 0.0, 0.043478260869565216, 0.9999999999999999, 0.3333333333333333],
@@ -47,7 +46,6 @@ MATRIZ_BASE_CENTRO = np.array([
     [0.20977061810541064, 0.16374269005847955, 0.19767441860465115, 0.11860664785968356, 0.09244332493702771, 0.07631901840490798, 0.3966346153846153, 0.03734474422740282, 0.0, 0.6851654215581817, 0.0, 0.14046822742474915, 0.5933277027027027, 0.0, 1.0, 0.9999999999999999, 0.3333333333333333]
 ], dtype=np.float32)
 
-# Carga de recursos ONNX y Escalador
 try:
     session = ort.InferenceSession('modelo_aire.onnx')
     scaler = joblib.load('escalador_aire.pkl')
@@ -55,30 +53,15 @@ try:
 except Exception as e:
     print(f"Error crítico al cargar datos: {e}")
 
-# --- FUNCIÓN GENERADORA DE LA SEMILLA DINÁMICA ---
 def generar_entrada_dinamica_del_dia() -> np.ndarray:
-    """
-    Toma la matriz del Centro Histórico y le aplica variaciones microscópicas 
-    únicas para el día de ejecución actual, manteniendo rangos válidos (0.0 a 1.0).
-    """
     hoy = datetime.now()
     seed_del_dia = int(hoy.strftime("%Y%m%d"))
-    
-    # Inicializar el generador aleatorio de NumPy con la semilla estática de hoy
     rng = np.random.default_rng(seed_del_dia)
-    
-    # Generar un ruido controlado de +- 1.5% para simular variaciones urbanas diarias
     ruido = rng.uniform(-0.015, 0.015, size=MATRIZ_BASE_CENTRO.shape)
-    
-    # Aplicar ruido y recortar valores estrictamente entre 0 y 1 para no romper la normalización
     matriz_dinamica = np.clip(MATRIZ_BASE_CENTRO + ruido, 0.0, 1.0)
-    
-    # Asegurar que las últimas columnas estructurales se mantengan estables
     matriz_dinamica[:, -1] = MATRIZ_BASE_CENTRO[:, -1]
-    
     return matriz_dinamica
 
-# --- FUNCIONES DE EVALUACIÓN ---
 def evaluar_pm25(valor):
     if valor <= 15.0: return "Bueno"
     elif valor <= 35.0: return "Normal"
@@ -90,11 +73,32 @@ def obtener_direccion_viento(grados):
     indice = int((grados / 22.5) + .5) % 16
     return direcciones[indice]
 
+# --- NUEVA FUNCIÓN PARA REDACTAR EL ANÁLISIS CIUDADANO ---
+def generar_texto_explicativo(pm25, pm10, o3, no2, tmp, hum, uv) -> str:
+    estado = evaluar_pm25(pm25)
+    consejo = ""
+    if estado == "Bueno":
+        consejo = "El aire es ideal para actividades al aire libre y deportes en las plazas coloniales."
+    elif estado == "Normal":
+        consejo = "La calidad del aire es aceptable; sin embargo, personas extremadamente sensibles podrían experimentar síntomas leves."
+    elif estado == "Dañino para grupos sensibles":
+        consejo = "Se recomienda que niños, adultos mayores y personas con problemas respiratorios (como asma) reduzcan los esfuerzos prolongados al aire libre."
+    else:
+        consejo = "¡Alerta ambiental! Se sugiere usar mascarilla en calles de alto flujo vehicular y evitar deportes al aire libre."
+
+    texto = (
+        f"Para la fecha consultada en el Centro Histórico de Quito, se registra un índice de material particulado "
+        f"fino PM2.5 de {pm25} µg/m³, lo que clasifica la calidad del aire como '{estado}'. {consejo} "
+        f"En el aspecto climático, se estima una temperatura de {tmp}°C con una humedad relativa del {hum}%. "
+        f"El índice de Radiación Ultravioleta (UV) se situará en un nivel {uv}, por lo que el uso de protector solar es altamente recomendable."
+    )
+    return texto
+
 # --- ENDPOINTS ---
 
 @app.get("/")
 def read_root():
-    return {"status": "online", "message": "API de Investigación Aplicada activa - Centro Histórico"}
+    return {"status": "online", "message": "API de Calidad del Aire - Centro Histórico de Quito lista."}
 
 @app.get("/predict")
 def predecir_individual(fecha: str = Query(..., description="Fecha YYYY-MM-DD")):
@@ -103,7 +107,6 @@ def predecir_individual(fecha: str = Query(..., description="Fecha YYYY-MM-DD"))
     except ValueError:
         raise HTTPException(status_code=400, detail="Formato inválido. Use YYYY-MM-DD")
     
-    # Inferencia usando la semilla mutada del día actual de ejecución
     entrada_bloque = generar_entrada_dinamica_del_dia()
     entrada_listo = np.expand_dims(entrada_bloque, axis=0).astype(np.float32)
     inputs = {session.get_inputs()[0].name: entrada_listo}
@@ -117,7 +120,6 @@ def predecir_individual(fecha: str = Query(..., description="Fecha YYYY-MM-DD"))
     factor = (dia * 0.05) - 0.4
     es_verano = mes_obj in [6, 7, 8, 9]
 
-    # Fórmulas matemáticas de alteración dinámica
     tmp = tmp_b + (factor * 4.5) if es_verano else tmp_b + (factor * 3.0) - 1.0
     hum = min(max(30.0, hum_b - (factor * 20) if es_verano else hum_b + (factor * 25)), 95.0)
     vel = vel_b + abs(factor * 6) if mes_obj == 8 else vel_b + (factor * 2)
@@ -138,14 +140,23 @@ def predecir_individual(fecha: str = Query(..., description="Fecha YYYY-MM-DD"))
     lluvia_txt = "Alta" if hum > 82.0 else ("Moderada" if hum > 68.0 else "Baja probabilidad")
     dir_viento = (dir_b + (dia * 15)) % 360
 
+    pm25_r = round(float(pm25), 1)
+    pm10_r = round(float(pm10), 1)
+    o3_r = round(float(o3), 1)
+    no2_r = round(float(no2), 1)
+    tmp_r = round(float(tmp), 1)
+    hum_r = int(hum)
+
+    analisis_ciudadano = generar_texto_explicativo(pm25_r, pm10_r, o3_r, no2_r, tmp_r, hum_r, iuv_dinamico)
+
     return {
         "fecha": target_dt.strftime("%d/%m/%Y"),
         "estado_general": "Moderado/Malo" if "Dañino" in evaluar_pm25(pm25) or pm25 > 35 else "Bueno",
-        "pm25": round(float(pm25), 1), "pm10": round(float(pm10), 1), "no2": round(float(no2), 1),
-        "o3": round(float(o3), 1), "so2": round(float(so2), 1), "co": round(float(co), 2),
-        "temperatura": round(float(tmp), 1), "humedad": int(hum), "lluvia": lluvia_txt,
+        "pm25": pm25_r, "pm10": pm10_r, "no2": no2_r, "o3": o3_r, "so2": round(float(so2), 1), "co": round(float(co), 2),
+        "temperatura": tmp_r, "humedad": hum_r, "lluvia": lluvia_txt,
         "viento": f"{abs(vel):.1f} km/h ({obtener_direccion_viento(dir_viento)})",
-        "radiacion": round(float(rs_calculada), 1), "uv": int(iuv_dinamico), "presion": int(pre_b)
+        "radiacion": round(float(rs_calculada), 1), "uv": int(iuv_dinamico), "presion": int(pre_b),
+        "analisis_texto": analisis_ciudadano
     }
 
 @app.get("/predict_range")
@@ -165,7 +176,6 @@ def predecir_rango(
     if dias_solicitados > 31:
         end_dt = start_dt + timedelta(days=30)
 
-    # Inferencia base ONNX usando la semilla mutada del día actual
     entrada_bloque = generar_entrada_dinamica_del_dia()
     entrada_listo = np.expand_dims(entrada_bloque, axis=0).astype(np.float32)
     inputs = {session.get_inputs()[0].name: entrada_listo}
@@ -176,6 +186,9 @@ def predecir_rango(
 
     resultados_rango = []
     current_dt = start_dt
+
+    # Acumuladores para promedios
+    sum_pm25, sum_pm10, sum_no2, sum_o3, sum_tmp, sum_hum, sum_uv = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
     while current_dt <= end_dt:
         dia = current_dt.day
@@ -204,6 +217,15 @@ def predecir_rango(
         lluvia_txt = "Alta" if hum > 82.0 else ("Moderada" if hum > 68.0 else "Baja probabilidad")
         dir_viento = (dir_b + (dia * 15)) % 360
         
+        # Sumar a acumuladores
+        sum_pm25 += pm25
+        sum_pm10 += pm10
+        sum_no2 += no2
+        sum_o3 += o3
+        sum_tmp += tmp
+        sum_hum += hum
+        sum_uv += iuv_dinamico
+
         resultados_rango.append({
             "fecha": current_dt.strftime("%d/%m/%Y"),
             "estado_general": "Malo" if "Dañino" in evaluar_pm25(pm25) or pm25 > 35 else "Bueno",
@@ -213,11 +235,45 @@ def predecir_rango(
             "viento": f"{abs(vel):.1f} km/h ({obtener_direccion_viento(dir_viento)})",
             "radiacion": round(float(rs_calculada), 1), "uv": int(iuv_dinamico), "presion": int(pre_b)
         })
-        
         current_dt += timedelta(days=1)
 
+    # Cálculo de promedios del rango
+    total_dias = len(resultados_rango)
+    prom_pm25 = round(sum_pm25 / total_dias, 1)
+    prom_pm10 = round(sum_pm10 / total_dias, 1)
+    prom_no2 = round(sum_no2 / total_dias, 1)
+    prom_o3 = round(sum_o3 / total_dias, 1)
+    prom_tmp = round(sum_tmp / total_dias, 1)
+    prom_hum = int(sum_hum / total_dias)
+    prom_uv = round(sum_uv / total_dias, 1)
+
+    # Redacción de la conclusión basada en el promedio general del rango
+    estado_promedio = evaluar_pm25(prom_pm25)
+    if estado_promedio in ["Bueno", "Normal"]:
+        conclusion = (
+            f"Conclusión general: Durante este rango de fechas, el Centro Histórico de Quito mantendrá un patrón atmosférico "
+            f"saludable y estable, ideal para la afluencia turística habitual. El promedio general de contaminación se conserva dentro de los límites admisibles."
+        )
+    else:
+        conclusion = (
+            f"Conclusión general: El periodo evaluado muestra tendencias críticas de acumulación de contaminantes, "
+            f"con promedios que superan la norma técnica recomendada. Esto es propicio de días secos o con alta congestión vehicular en el casco colonial, "
+            f"ameritando atención preventiva en grupos vulnerables."
+        )
+
     return {
-        "rango_dias_procesados": len(resultados_rango),
+        "rango_dias_procesados": total_dias,
         "limite_aplicado": dias_solicitados > 31,
+        "resumen_rango": {
+            "promedio_pm25": prom_pm25,
+            "promedio_pm10": prom_pm10,
+            "promedio_no2": prom_no2,
+            "promedio_o3": prom_o3,
+            "promedio_temperatura": prom_tmp,
+            "promedio_humedad": prom_hum,
+            "promedio_indice_uv": prom_uv,
+            "estado_promedio_periodo": estado_promedio,
+            "conclusion_texto": conclusion
+        },
         "datos": resultados_rango
     }
